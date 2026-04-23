@@ -230,6 +230,9 @@ def get_pdp_from_cache(row, PDP_DATA, SHAP_BAR, top_n=13):
         x_grid = [float(pt["x"]) for pt in curve]
         y_grid = [float(pt["y"]) for pt in curve]
 
+        # -----------------------------
+        # INTERPOLATE HOSPITAL POINT
+        # -----------------------------
         if len(x_grid) == 1:
             hospital_y = y_grid[0]
         elif current <= x_grid[0]:
@@ -242,6 +245,7 @@ def get_pdp_from_cache(row, PDP_DATA, SHAP_BAR, top_n=13):
                 if x_grid[i] <= current <= x_grid[i + 1]:
                     x1, x2 = x_grid[i], x_grid[i + 1]
                     y1, y2 = y_grid[i], y_grid[i + 1]
+
                     ratio = 0 if x2 == x1 else (current - x1) / (x2 - x1)
                     hospital_y = y1 + ratio * (y2 - y1)
                     break
@@ -249,16 +253,30 @@ def get_pdp_from_cache(row, PDP_DATA, SHAP_BAR, top_n=13):
         optimal_value = float(feature_pdp.get("optimal_value", 0))
         optimal_risk = float(feature_pdp.get("optimal_risk", 0))
 
-        # same status logic as get_pdp_actions
-        diff_ratio = abs(current - optimal_value) / (abs(optimal_value) + 1e-6)
+        # -----------------------------
+        # 🔥 NEW NORMALIZED DISTANCE LOGIC
+        # -----------------------------
+        x_min = min(x_grid)
+        x_max = max(x_grid)
 
-        if diff_ratio <= 0.5:
+        x_range = max(x_max - x_min, 1e-6)  # avoid division by zero
+
+        distance = abs(current - optimal_value)
+        diff_ratio = distance / x_range  # ✅ normalized 0–1 scale
+
+        # -----------------------------
+        # UNIFORM STATUS BUCKETS
+        # -----------------------------
+        if diff_ratio <= 0.15:
             status = "Good"
-        elif diff_ratio <= 0.75:
+        elif diff_ratio <= 0.35:
             status = "Needs Attention"
         else:
             status = "Critical"
 
+        # -----------------------------
+        # SUGGESTION
+        # -----------------------------
         if current > optimal_value:
             suggestion = f"Reduce {feature} toward {round(optimal_value, 4)}"
         elif current < optimal_value:
@@ -269,10 +287,7 @@ def get_pdp_from_cache(row, PDP_DATA, SHAP_BAR, top_n=13):
         output.append({
             "feature": str(feature),
             "curve": [
-                {
-                    "x": float(pt["x"]),
-                    "y": float(pt["y"])
-                }
+                {"x": float(pt["x"]), "y": float(pt["y"])}
                 for pt in curve
             ],
             "hospital_point": {
@@ -287,8 +302,6 @@ def get_pdp_from_cache(row, PDP_DATA, SHAP_BAR, top_n=13):
         })
 
     return output
-
-
     
 # def get_pdp_from_cache(row, PDP_DATA):
 #     output = []
