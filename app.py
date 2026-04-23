@@ -293,7 +293,7 @@ async def individual_explainability(request: Request):
             },
             "waterfall": {"features": []},
             "tree_vote": get_tree_vote(X_hospital),
-            "pdp_plots": get_pdp_from_cache(row)
+            "pdp_plots": get_pdp_from_cache(row, PDP_DATA)
         })
 
     except Exception as e:
