@@ -285,42 +285,42 @@ def get_pdp_from_cache(row, PDP_DATA, SHAP_BAR, top_n=13):
     return output
 
 
-def get_pdp_from_cache(row, PDP_DATA):
-    output = []
+# def get_pdp_from_cache(row, PDP_DATA):
+#     output = []
 
-    for feature, feature_pdp in PDP_DATA.items():
-        current = float(row[feature])
+#     for feature, feature_pdp in PDP_DATA.items():
+#         current = float(row[feature])
 
-        curve = feature_pdp["curve"]
+#         curve = feature_pdp["curve"]
 
-        x_grid = [pt["x"] for pt in curve]
-        y_grid = [pt["y"] for pt in curve]
+#         x_grid = [pt["x"] for pt in curve]
+#         y_grid = [pt["y"] for pt in curve]
 
-        # simple interpolation
-        hospital_y = y_grid[0]
-        for i in range(len(x_grid) - 1):
-            if x_grid[i] <= current <= x_grid[i + 1]:
-                hospital_y = y_grid[i]
-                break
+#         # simple interpolation
+#         hospital_y = y_grid[0]
+#         for i in range(len(x_grid) - 1):
+#             if x_grid[i] <= current <= x_grid[i + 1]:
+#                 hospital_y = y_grid[i]
+#                 break
 
-        optimal_value = float(feature_pdp["optimal_value"])
-        optimal_risk = float(feature_pdp["optimal_risk"])
+#         optimal_value = float(feature_pdp["optimal_value"])
+#         optimal_risk = float(feature_pdp["optimal_risk"])
 
-        output.append({
-            "feature": feature,
-            "curve": curve,
-            "hospital_point": {
-                "x": current,
-                "y": hospital_y
-            },
-            "current_value": current,
-            "optimal_value": optimal_value,
-            "optimal_risk": optimal_risk,
-            "suggestion": f"Move toward {round(optimal_value, 2)}",
-            "status": "Needs Attention"
-        })
+#         output.append({
+#             "feature": feature,
+#             "curve": curve,
+#             "hospital_point": {
+#                 "x": current,
+#                 "y": hospital_y
+#             },
+#             "current_value": current,
+#             "optimal_value": optimal_value,
+#             "optimal_risk": optimal_risk,
+#             "suggestion": f"Move toward {round(optimal_value, 2)}",
+#             "status": "Needs Attention"
+#         })
 
-    return output
+#     return output
 
 def get_pdp_actions(row):
     """
