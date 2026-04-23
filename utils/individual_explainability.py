@@ -252,9 +252,9 @@ def get_pdp_from_cache(row, PDP_DATA, SHAP_BAR, top_n=13):
         # same status logic as get_pdp_actions
         diff_ratio = abs(current - optimal_value) / (abs(optimal_value) + 1e-6)
 
-        if diff_ratio <= 0.2:
+        if diff_ratio <= 0.5:
             status = "Good"
-        elif diff_ratio <= 0.5:
+        elif diff_ratio <= 0.75:
             status = "Needs Attention"
         else:
             status = "Critical"
