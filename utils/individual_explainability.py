@@ -34,6 +34,14 @@ def _interp_y(x_grid, y_grid, x_value):
 # -----------------------------
 # WATERFALL (returns plot data)
 # -----------------------------
+
+def get_waterfall_from_cache(hospital_name, WF_DATA):
+    if not hospital_name:
+        return {"features": []}
+
+    key = str(hospital_name).strip().lower()
+    return WF_DATA.get(key, {"features": []})
+
 def get_waterfall(idx, max_display=10):
     """
     Returns frontend-ready waterfall data for one hospital

@@ -34,6 +34,7 @@ from utils.global_explainability import (
 
 from utils.individual_explainability import (
     get_waterfall,
+    get_waterfall_from_cache,
     get_tree_vote,
     get_pdp_actions,
     get_pdp_from_cache,
@@ -64,6 +65,9 @@ with open(CACHE_DIR / "shap_bar.json") as f:
 
 with open(CACHE_DIR / "pdp_data.json") as f:
     PDP_DATA = json.load(f)
+
+with open(CACHE_DIR / "waterfall_data.json") as f:
+    WF_DATA = json.load(f)
 
 # ---------------- CORS ----------------
 
@@ -261,130 +265,39 @@ def global_explainability():
 
 @app.post("/individual-hospital")
 async def individual_explainability(request: Request):
-    try:
-        data = await request.json()
-        hospital_name = data.get("hospital_name")
+    data = await request.json()
+    hospital_name = data.get("hospital_name")
 
-        if not hospital_name:
-            raise HTTPException(status_code=400, detail="hospital_name required")
+    if not hospital_name:
+        raise HTTPException(status_code=400, detail="hospital_name required")
 
-        df = get_processed_data().copy()
-        df = df.replace([np.inf, -np.inf], 0).fillna(0)
+    df = get_processed_data().copy()
+    df = df.replace([np.inf, -np.inf], 0).fillna(0)
 
-        selected = df[
-            df["hospital_name"].astype(str).str.strip().str.lower()
-            == str(hospital_name).strip().lower()
-        ]
+    selected = df[
+        df["hospital_name"].astype(str).str.strip().str.lower()
+        == str(hospital_name).strip().lower()
+    ]
 
-        if selected.empty:
-            raise HTTPException(status_code=404, detail="Hospital not found")
+    if selected.empty:
+        raise HTTPException(status_code=404, detail="Hospital not found")
 
-        row = selected.iloc[0]
-        X_hospital = selected[features].iloc[[0]].copy().fillna(0)
+    row = selected.iloc[0]
+    X_hospital = selected[features].iloc[[0]].copy().fillna(0)
 
-        return to_python_type({
-            "hospital": {
-                "hospital_name": str(row.get("hospital_name", "")),
-                "risk_score": float(row.get("risk_score", 0)),
-                "risk_tier": str(row.get("risk_tier", "Unknown")),
-                "trend_indicator": int(row["dso_trend"]) if pd.notna(row.get("dso_trend")) else None,
-                "location": str(row.get("location")) if pd.notna(row.get("location")) else None,
-                "specialty": str(row.get("specialty")) if pd.notna(row.get("specialty")) else None,
-            },
-            "waterfall": {"features": []},
-            "tree_vote": get_tree_vote(X_hospital),
-            "pdp_plots": get_pdp_from_cache(row, PDP_DATA)
-        })
-
-    except Exception as e:
-        print("ERROR in /individual-hospital:", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
-
-# @app.post("/individual-hospital")
-# async def individual_explainability(request: Request):
-#     data = await request.json()
-#     hospital_name = data.get("hospital_name")
-
-#     if not hospital_name:
-#         raise HTTPException(status_code=400, detail="hospital_name required")
-
-#     df = get_processed_data().copy()
-#     df = df.replace([np.inf, -np.inf], 0).fillna(0)
-
-#     selected = df[
-#         df["hospital_name"].astype(str).str.strip().str.lower()
-#         == str(hospital_name).strip().lower()
-#     ]
-
-#     if selected.empty:
-#         raise HTTPException(status_code=404, detail="Hospital not found")
-
-#     row = selected.iloc[0]
-
-#     return to_python_type({
-#         "hospital": {
-#             "hospital_name": str(row.get("hospital_name", "")),
-#             "risk_score": float(row.get("risk_score", 0)),
-#             "risk_tier": str(row.get("risk_tier", "Unknown")),
-#             "trend_indicator": int(row["dso_trend"]) if pd.notna(row.get("dso_trend")) else None,
-#             "location": str(row.get("location")) if pd.notna(row.get("location")) else None,
-#             "specialty": str(row.get("specialty")) if pd.notna(row.get("specialty")) else None,
-#         },
-#         "waterfall": {"features": []},
-#         "tree_vote": {"risk_percent": 0, "yes_votes": 0, "no_votes": 0},
-#         "pdp_plots": []
-#     })
-
-# @app.post("/individual-hospital")
-# async def individual_explainability(request: Request):
-#     try:
-#         data = await request.json()
-#         hospital_name = data.get("hospital_name")
-
-#         print("Incoming hospital:", hospital_name)
-
-#         if not hospital_name:
-#             raise HTTPException(status_code=400, detail="hospital_name required")
-
-#         df = get_processed_data().copy()
-#         df = df.replace([np.inf, -np.inf], 0).fillna(0)
-
-#         print("DF columns:", df.columns.tolist())
-
-#         selected = df[df["hospital_name"] == hospital_name]
-
-#         print("Selected rows:", len(selected))
-
-#         if selected.empty:
-#             raise HTTPException(status_code=404, detail="Hospital not found")
-
-#         idx = int(selected.index[0])
-#         row = selected.iloc[0]
-
-#         print("Using features:", features)
-
-#         X_hospital = selected[features].iloc[[0]].copy().fillna(0)
-
-#         print("X shape:", X_hospital.shape)
-
-#         return to_python_type({
-#             "hospital": {
-#                 "hospital_name": str(row["hospital_name"]),
-#                 "risk_score": float(row["risk_score"]),
-#                 "risk_tier": str(row["risk_tier"]),
-#                 "trend_indicator": int(row["dso_trend"]) if pd.notna(row.get("dso_trend")) else None,
-#                 "location": str(row.get("location")),
-#                 "specialty": str(row.get("specialty")),
-#             },
-#             "waterfall": get_waterfall(idx),
-#             "tree_vote": get_tree_vote(X_hospital),
-#             # "pdp_plots": get_pdp_actions(row),
-#             "pdp_plots": get_pdp_from_cache(row, PDP_DATA)
-#         })
-
-#     except Exception as e:
-#         print("ERROR IN /individual-hospital:", str(e))
-#         raise HTTPException(status_code=500, detail=str(e))
+    return to_python_type({
+        "hospital": {
+            "hospital_name": str(row.get("hospital_name", "")),
+            "risk_score": float(row.get("risk_score", 0)),
+            "risk_tier": str(row.get("risk_tier", "Unknown")),
+            "trend_indicator": int(row["dso_trend"]) if pd.notna(row.get("dso_trend")) else None,
+            "location": str(row.get("location")) if pd.notna(row.get("location")) else None,
+            "specialty": str(row.get("specialty")) if pd.notna(row.get("specialty")) else None,
+        },
+        "waterfall": get_waterfall_from_cache(hospital_name, WF_DATA),
+        "tree_vote": get_tree_vote(X_hospital),
+        "pdp_plots": get_pdp_from_cache(row, PDP_DATA)
+    })
     
 # @app.post("/individual-hospital")
 # async def individual_explainability(request: Request):
