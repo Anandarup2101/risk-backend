@@ -9,8 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # Uncomment these only when serving React build from FastAPI
-# from fastapi.responses import FileResponse
-# from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from services.data_loader import load_data
 from services.feature_engineering import engineer_features
@@ -46,19 +46,15 @@ BASE_DIR = Path(__file__).resolve().parent
 USERS_PATH = BASE_DIR / "services" / "inputs" / "users.xlsx"
 
 # Uncomment these only when using React build inside backend
-# FRONTEND_DIR = BASE_DIR / "frontend_build"
-# FRONTEND_STATIC_DIR = FRONTEND_DIR / "static"
-# FRONTEND_INDEX = FRONTEND_DIR / "index.html"
+FRONTEND_DIR = BASE_DIR / "frontend_build"
+FRONTEND_STATIC_DIR = FRONTEND_DIR / "static"
+FRONTEND_INDEX = FRONTEND_DIR / "index.html"
 
 # ---------------- CORS ----------------
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000",   # local React frontend
-        "http://127.0.0.1:3000",
-        "http://localhost:8000",   # if serving build from backend later
-        "http://127.0.0.1:8000",
         "*"
     ],
     allow_credentials=True,
@@ -69,8 +65,8 @@ app.add_middleware(
 # ---------------- STATIC FRONTEND ----------------
 
 # Uncomment only when serving React build from FastAPI
-# if FRONTEND_STATIC_DIR.exists():
-#     app.mount("/static", StaticFiles(directory=FRONTEND_STATIC_DIR), name="static")
+if FRONTEND_STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=FRONTEND_STATIC_DIR), name="static")
 
 # ---------------- FILTER MODELS ----------------
 
@@ -473,22 +469,22 @@ def refresh():
 # ---------------- FRONTEND ----------------
 
 # Uncomment these only when using React build inside backend
-# @app.get("/")
-# def serve_frontend():
-#     if FRONTEND_INDEX.exists():
-#         return FileResponse(FRONTEND_INDEX)
-#     raise HTTPException(status_code=404, detail="Frontend not found")
+@app.get("/")
+def serve_frontend():
+    if FRONTEND_INDEX.exists():
+        return FileResponse(FRONTEND_INDEX)
+    raise HTTPException(status_code=404, detail="Frontend not found")
 
 
-# @app.get("/{path:path}")
-# def serve_react(path: str):
-#     if path.startswith(("api", "docs", "openapi", "charts", "explainability")):
-#         raise HTTPException(status_code=404)
-#
-#     if FRONTEND_INDEX.exists():
-#         return FileResponse(FRONTEND_INDEX)
-#
-#     raise HTTPException(status_code=404)
+@app.get("/{path:path}")
+def serve_react(path: str):
+    if path.startswith(("api", "docs", "openapi", "charts", "explainability")):
+        raise HTTPException(status_code=404)
+
+    if FRONTEND_INDEX.exists():
+        return FileResponse(FRONTEND_INDEX)
+
+    raise HTTPException(status_code=404)
 
 
 # ---------------- MAIN ----------------
