@@ -31,7 +31,7 @@ from utils.global_explainability import (
     get_global_feature_matrix,
 )
 
-from utils.indivudual_explainability import (
+from utils.individual_explainability import (
     get_waterfall,
     get_tree_vote,
     get_pdp_actions,
