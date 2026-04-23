@@ -238,41 +238,92 @@ def global_explainability():
 
 # ---------------- INDIVIDUAL SHAP ----------------
 
+
 @app.post("/individual-hospital")
 async def individual_explainability(request: Request):
-    data = await request.json()
-    hospital_name = data.get("hospital_name")
+    try:
+        data = await request.json()
+        hospital_name = data.get("hospital_name")
 
-    if not hospital_name:
-        raise HTTPException(status_code=400, detail="hospital_name required")
+        print("Incoming hospital:", hospital_name)
 
-    df = get_processed_data().copy()
-    df = df.replace([np.inf, -np.inf], 0).fillna(0)
+        if not hospital_name:
+            raise HTTPException(status_code=400, detail="hospital_name required")
 
-    selected = df[df["hospital_name"] == hospital_name]
+        df = get_processed_data().copy()
+        df = df.replace([np.inf, -np.inf], 0).fillna(0)
 
-    if selected.empty:
-        raise HTTPException(status_code=404, detail="Hospital not found")
+        print("DF columns:", df.columns.tolist())
 
-    idx = int(selected.index[0])
-    row = selected.iloc[0]
-    X_hospital = selected[features].iloc[[0]].copy().fillna(0)
+        selected = df[df["hospital_name"] == hospital_name]
 
-    return to_python_type({
-        "hospital": {
-            "hospital_name": str(row["hospital_name"]),
-            "risk_score": float(row["risk_score"]),
-            "risk_tier": str(row["risk_tier"]),
-            "trend_indicator": int(row["dso_trend"]) if pd.notna(row.get("dso_trend")) else None,
-            "location": str(row["location"]) if pd.notna(row.get("location")) else None,
-            "specialty": str(row["specialty"]) if pd.notna(row.get("specialty")) else None,
-            "latitude": float(row["latitude"]) if pd.notna(row.get("latitude")) else None,
-            "longitude": float(row["longitude"]) if pd.notna(row.get("longitude")) else None,
-        },
-        "waterfall": get_waterfall(idx),
-        "tree_vote": get_tree_vote(X_hospital),
-        "pdp_plots": get_pdp_actions(row),
-    })
+        print("Selected rows:", len(selected))
+
+        if selected.empty:
+            raise HTTPException(status_code=404, detail="Hospital not found")
+
+        idx = int(selected.index[0])
+        row = selected.iloc[0]
+
+        print("Using features:", features)
+
+        X_hospital = selected[features].iloc[[0]].copy().fillna(0)
+
+        print("X shape:", X_hospital.shape)
+
+        return to_python_type({
+            "hospital": {
+                "hospital_name": str(row["hospital_name"]),
+                "risk_score": float(row["risk_score"]),
+                "risk_tier": str(row["risk_tier"]),
+                "trend_indicator": int(row["dso_trend"]) if pd.notna(row.get("dso_trend")) else None,
+                "location": str(row.get("location")),
+                "specialty": str(row.get("specialty")),
+            },
+            "waterfall": get_waterfall(idx),
+            "tree_vote": get_tree_vote(X_hospital),
+            "pdp_plots": get_pdp_actions(row),
+        })
+
+    except Exception as e:
+        print("ERROR IN /individual-hospital:", str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+    
+# @app.post("/individual-hospital")
+# async def individual_explainability(request: Request):
+#     data = await request.json()
+#     hospital_name = data.get("hospital_name")
+
+#     if not hospital_name:
+#         raise HTTPException(status_code=400, detail="hospital_name required")
+
+#     df = get_processed_data().copy()
+#     df = df.replace([np.inf, -np.inf], 0).fillna(0)
+
+#     selected = df[df["hospital_name"] == hospital_name]
+
+#     if selected.empty:
+#         raise HTTPException(status_code=404, detail="Hospital not found")
+
+#     idx = int(selected.index[0])
+#     row = selected.iloc[0]
+#     X_hospital = selected[features].iloc[[0]].copy().fillna(0)
+
+#     return to_python_type({
+#         "hospital": {
+#             "hospital_name": str(row["hospital_name"]),
+#             "risk_score": float(row["risk_score"]),
+#             "risk_tier": str(row["risk_tier"]),
+#             "trend_indicator": int(row["dso_trend"]) if pd.notna(row.get("dso_trend")) else None,
+#             "location": str(row["location"]) if pd.notna(row.get("location")) else None,
+#             "specialty": str(row["specialty"]) if pd.notna(row.get("specialty")) else None,
+#             "latitude": float(row["latitude"]) if pd.notna(row.get("latitude")) else None,
+#             "longitude": float(row["longitude"]) if pd.notna(row.get("longitude")) else None,
+#         },
+#         "waterfall": get_waterfall(idx),
+#         "tree_vote": get_tree_vote(X_hospital),
+#         "pdp_plots": get_pdp_actions(row),
+#     })
 
 
 # ---------------- CHARTS ----------------
