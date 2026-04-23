@@ -210,7 +210,6 @@ def get_global_pdp_data(n_grid=25):
 # -----------------------------
 # PDP PLOTS + HOSPITAL POSITION
 # -----------------------------
-
 def get_pdp_from_cache(row, PDP_DATA, SHAP_BAR, top_n=13):
     output = []
 
@@ -250,16 +249,12 @@ def get_pdp_from_cache(row, PDP_DATA, SHAP_BAR, top_n=13):
         optimal_value = float(feature_pdp.get("optimal_value", 0))
         optimal_risk = float(feature_pdp.get("optimal_risk", 0))
 
-        x_min = min(x_grid)
-        x_max = max(x_grid)
-        x_span = max(x_max - x_min, 1e-6)
+        # same status logic as get_pdp_actions
+        diff_ratio = abs(current - optimal_value) / (abs(optimal_value) + 1e-6)
 
-        value_gap_ratio = abs(current - optimal_value) / x_span
-        risk_gap = max(0.0, hospital_y - optimal_risk)
-
-        if value_gap_ratio <= 0.10 and risk_gap <= 2:
+        if diff_ratio <= 0.2:
             status = "Good"
-        elif value_gap_ratio <= 0.30 and risk_gap <= 8:
+        elif diff_ratio <= 0.5:
             status = "Needs Attention"
         else:
             status = "Critical"
@@ -273,8 +268,17 @@ def get_pdp_from_cache(row, PDP_DATA, SHAP_BAR, top_n=13):
 
         output.append({
             "feature": str(feature),
-            "curve": [{"x": float(pt["x"]), "y": float(pt["y"])} for pt in curve],
-            "hospital_point": {"x": float(current), "y": float(hospital_y)},
+            "curve": [
+                {
+                    "x": float(pt["x"]),
+                    "y": float(pt["y"])
+                }
+                for pt in curve
+            ],
+            "hospital_point": {
+                "x": float(current),
+                "y": float(hospital_y)
+            },
             "current_value": float(current),
             "optimal_value": float(optimal_value),
             "optimal_risk": float(optimal_risk),
@@ -285,6 +289,7 @@ def get_pdp_from_cache(row, PDP_DATA, SHAP_BAR, top_n=13):
     return output
 
 
+    
 # def get_pdp_from_cache(row, PDP_DATA):
 #     output = []
 
