@@ -211,6 +211,80 @@ def get_global_pdp_data(n_grid=25):
 # PDP PLOTS + HOSPITAL POSITION
 # -----------------------------
 
+def get_pdp_from_cache(row, PDP_DATA, SHAP_BAR, top_n=13):
+    output = []
+
+    top_features = [
+        item["feature"]
+        for item in SHAP_BAR[:top_n]
+        if item["feature"] in PDP_DATA and item["feature"] in row.index
+    ]
+
+    for feature in top_features:
+        current = float(row.get(feature, 0))
+        feature_pdp = PDP_DATA[feature]
+        curve = feature_pdp.get("curve", [])
+
+        if not curve:
+            continue
+
+        x_grid = [float(pt["x"]) for pt in curve]
+        y_grid = [float(pt["y"]) for pt in curve]
+
+        if len(x_grid) == 1:
+            hospital_y = y_grid[0]
+        elif current <= x_grid[0]:
+            hospital_y = y_grid[0]
+        elif current >= x_grid[-1]:
+            hospital_y = y_grid[-1]
+        else:
+            hospital_y = y_grid[0]
+            for i in range(len(x_grid) - 1):
+                if x_grid[i] <= current <= x_grid[i + 1]:
+                    x1, x2 = x_grid[i], x_grid[i + 1]
+                    y1, y2 = y_grid[i], y_grid[i + 1]
+                    ratio = 0 if x2 == x1 else (current - x1) / (x2 - x1)
+                    hospital_y = y1 + ratio * (y2 - y1)
+                    break
+
+        optimal_value = float(feature_pdp.get("optimal_value", 0))
+        optimal_risk = float(feature_pdp.get("optimal_risk", 0))
+
+        x_min = min(x_grid)
+        x_max = max(x_grid)
+        x_span = max(x_max - x_min, 1e-6)
+
+        value_gap_ratio = abs(current - optimal_value) / x_span
+        risk_gap = max(0.0, hospital_y - optimal_risk)
+
+        if value_gap_ratio <= 0.10 and risk_gap <= 2:
+            status = "Good"
+        elif value_gap_ratio <= 0.30 and risk_gap <= 8:
+            status = "Needs Attention"
+        else:
+            status = "Critical"
+
+        if current > optimal_value:
+            suggestion = f"Reduce {feature} toward {round(optimal_value, 4)}"
+        elif current < optimal_value:
+            suggestion = f"Increase {feature} toward {round(optimal_value, 4)}"
+        else:
+            suggestion = f"Keep {feature} near {round(optimal_value, 4)}"
+
+        output.append({
+            "feature": str(feature),
+            "curve": [{"x": float(pt["x"]), "y": float(pt["y"])} for pt in curve],
+            "hospital_point": {"x": float(current), "y": float(hospital_y)},
+            "current_value": float(current),
+            "optimal_value": float(optimal_value),
+            "optimal_risk": float(optimal_risk),
+            "suggestion": str(suggestion),
+            "status": str(status)
+        })
+
+    return output
+
+
 def get_pdp_from_cache(row, PDP_DATA):
     output = []
 

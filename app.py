@@ -296,7 +296,7 @@ async def individual_explainability(request: Request):
         },
         "waterfall": get_waterfall_from_cache(hospital_name, WF_DATA),
         "tree_vote": get_tree_vote(X_hospital),
-        "pdp_plots": get_pdp_from_cache(row, PDP_DATA)
+        "pdp_plots": get_pdp_from_cache(row, PDP_DATA, SHAP_BAR)
     })
     
 # @app.post("/individual-hospital")
