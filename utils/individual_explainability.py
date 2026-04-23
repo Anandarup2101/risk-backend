@@ -264,12 +264,13 @@ def get_pdp_from_cache(row, PDP_DATA, SHAP_BAR, top_n=13):
         distance = abs(current - optimal_value)
         diff_ratio = distance / x_range  # ✅ normalized 0–1 scale
 
+        risk_gap = max(0.0, hospital_y - optimal_risk)
         # -----------------------------
         # UNIFORM STATUS BUCKETS
         # -----------------------------
-        if diff_ratio <= 0.15:
+        if diff_ratio <= 0.5 and risk_gap <= 5:
             status = "Good"
-        elif diff_ratio <= 0.35:
+        elif diff_ratio <= 0.75 and risk_gap <= 18:
             status = "Needs Attention"
         else:
             status = "Critical"
