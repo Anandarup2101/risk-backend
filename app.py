@@ -223,7 +223,7 @@ def dashboard(filters: DashboardFilters):
 
 # ---------------- GLOBAL SHAP ----------------
 
-@app.get("/explainability/global")
+@app.get("/global-shap")
 def global_explainability():
     df = get_processed_data().copy()
 
@@ -238,7 +238,7 @@ def global_explainability():
 
 # ---------------- INDIVIDUAL SHAP ----------------
 
-@app.post("/explainability/individual")
+@app.post("/individual-hospital")
 async def individual_explainability(request: Request):
     data = await request.json()
     hospital_name = data.get("hospital_name")
