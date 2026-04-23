@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import json
 
 # Uncomment these only when serving React build from FastAPI
 # from fastapi.responses import FileResponse
@@ -35,6 +36,7 @@ from utils.individual_explainability import (
     get_waterfall,
     get_tree_vote,
     get_pdp_actions,
+    get_pdp_from_cache,
     get_global_pdp_data,
 )
 
@@ -49,6 +51,19 @@ USERS_PATH = BASE_DIR / "services" / "inputs" / "users.xlsx"
 # FRONTEND_DIR = BASE_DIR / "frontend_build"
 # FRONTEND_STATIC_DIR = FRONTEND_DIR / "static"
 # FRONTEND_INDEX = FRONTEND_DIR / "index.html"
+
+# ---------------- CACHE ----------------
+
+CACHE_DIR = BASE_DIR / "data_cache"
+
+with open(CACHE_DIR / "shap_summary.json") as f:
+    SHAP_SUMMARY = json.load(f)
+
+with open(CACHE_DIR / "shap_bar.json") as f:
+    SHAP_BAR = json.load(f)
+
+with open(CACHE_DIR / "pdp_data.json") as f:
+    PDP_DATA = json.load(f)
 
 # ---------------- CORS ----------------
 
@@ -223,18 +238,24 @@ def dashboard(filters: DashboardFilters):
 
 # ---------------- GLOBAL SHAP ----------------
 
+# @app.get("/global-shap")
+# def global_explainability():
+#     df = get_processed_data().copy()
+
+#     X = df[features].copy()
+#     X = X.replace([np.inf, -np.inf], 0).fillna(0)
+
+#     return to_python_type({
+#         "shap_summary": get_shap_summary(X),
+#         "shap_bar": get_shap_bar(X),
+#     })
+
 @app.get("/global-shap")
 def global_explainability():
-    df = get_processed_data().copy()
-
-    X = df[features].copy()
-    X = X.replace([np.inf, -np.inf], 0).fillna(0)
-
-    return to_python_type({
-        "shap_summary": get_shap_summary(X),
-        "shap_bar": get_shap_bar(X),
-    })
-
+    return {
+        "shap_summary": SHAP_SUMMARY,
+        "shap_bar": SHAP_BAR
+    }
 
 # ---------------- INDIVIDUAL SHAP ----------------
 
@@ -282,7 +303,8 @@ async def individual_explainability(request: Request):
             },
             "waterfall": get_waterfall(idx),
             "tree_vote": get_tree_vote(X_hospital),
-            "pdp_plots": get_pdp_actions(row),
+            # "pdp_plots": get_pdp_actions(row),
+            "pdp_plots": get_pdp_from_cache(row, PDP_DATA)
         })
 
     except Exception as e:
