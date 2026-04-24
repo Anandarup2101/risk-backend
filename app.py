@@ -17,6 +17,12 @@ from services.data_loader import load_data
 from services.feature_engineering import engineer_features
 from services.prediction import run_prediction, features
 
+import os
+from dotenv import load_dotenv
+from fastapi import FastAPI
+from pydantic import BaseModel
+from openai import AzureOpenAI
+
 from utils.charts import (
     get_donut_data,
     get_bubble_data,
@@ -42,6 +48,8 @@ from utils.individual_explainability import (
     get_pdp_from_cache,
     get_global_pdp_data,
 )
+
+load_dotenv()
 
 app = FastAPI()
 
@@ -109,6 +117,15 @@ class DashboardFilters(BaseModel):
     risk_tier: Optional[List[str]] = None
     exposure_range: Optional[ExposureRange] = None
 
+# ---------------- LLM ----------------
+
+client = AzureOpenAI(
+    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+    api_version=os.getenv("AZURE_OPENAI_API_VERSION")
+)
+
+DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
 
 # ---------------- SAFE JSON ----------------
 
@@ -506,7 +523,44 @@ async def cluster_scatter_chart(request: Request):
         get_cluster_scatter_data(df=df, n_clusters=n_clusters)
     )
 
+# ---------------- LLM CALL ----------------
+@app.post("/llm/ask")
+async def ask_llm(request: Request):
+    try:
+        data = await request.json()
+        prompt = data.get("prompt")
+        print(os.getenv("AZURE_OPENAI_ENDPOINT"))
+        if not prompt:
+            return {"answer": "No prompt provided"}
 
+        response = client.chat.completions.create(
+            model=DEPLOYMENT_NAME,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a healthcare risk intelligence assistant. Explain in simple business terms."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            temperature=0.2,
+            max_tokens=400
+        )
+
+        # answer = response.choices[0].message.content
+        answer = str(response.choices[0].message.content or "")
+
+        return {
+            "answer": answer
+        }
+
+    except Exception as e:
+        return {
+            "answer": "Error generating response",
+            "error": str(e)
+        }
 
 # @app.post("/charts/cluster-scatter")
 # async def cluster_scatter_chart(request: Request):
