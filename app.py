@@ -23,6 +23,8 @@ from utils.charts import (
     get_line_data,
     get_geo_heatmap_data,
     get_cluster_scatter_data,
+    get_speciality_donut_data,
+    format_number
 )
 
 from utils.global_explainability import (
@@ -188,7 +190,7 @@ def health():
 def dashboard(filters: DashboardFilters):
     df = get_processed_data().copy()
 
-    bars = get_line_data(df)
+    # df.to_excel("dataframe.xlsx", index=False)
 
     if filters.location:
 
@@ -221,14 +223,16 @@ def dashboard(filters: DashboardFilters):
     cards = {
         "total_hospitals": int(len(df)),
         "total_at_risk": int(df["risk_flag"].sum()) if "risk_flag" in df.columns else 0,
-        "total_exposure": total_exposure,
+        "total_exposure": format_number(total_exposure),
+        "total_exposure_raw": total_exposure, 
         "exposure_at_risk": exposure_at_risk,
     }
 
     charts = {
         "donut": get_donut_data(df),
         "bubble": get_bubble_data(df),
-        "line": bars,
+        "line": get_line_data(df),
+        "specialty_donut":get_speciality_donut_data(df)
     }
 
     table = df.to_dict(orient="records")
