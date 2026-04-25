@@ -598,25 +598,29 @@ async def waterfall_explanation(request: Request):
         }
 
         prompt = f"""
-            You are a healthcare risk advisor.
+        You are a healthcare risk advisor.
 
-            Explain the top 3 risky features in decreasing order of importance and their impact in a key value format.
+        Explain the top 3 risky features in decreasing order of importance and their impact in a clear key-value format.
 
-            Rules:
-            - No introduction
-            - Max 140 words
-            - Do not explain SHAP theory
-            - Explain why this hospital got its current risk score
-            - Separate risk-increasing and risk-reducing drivers
-            - Focus on what business users should act on
-            - Do not invent data
+        Rules:
+        - No introduction
+        - Max 140 words
+        - Give complete answers, do not stop midway
+        - Do not explain SHAP theory
+        - Do not invent data
+        - Use only provided values
+        - Keep language simple and business-focused
 
-            What to cover:
-            1. Main factors pushing risk upward
+        Structure (MANDATORY):
 
-            Data:
-            {llm_payload}
-            """
+        1. Risk Drivers (Top 3 increasing factors)
+        - Feature: value → why it increases risk
+
+        2. Risk Reducers (Top 2 decreasing factors, if any)
+        - Feature: value → how it reduces risk
+
+        Data:
+        {llm_payload}"""
 
         response = client.chat.completions.create(
             model=DEPLOYMENT_NAME,
