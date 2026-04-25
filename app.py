@@ -600,8 +600,7 @@ async def waterfall_explanation(request: Request):
         prompt = f"""
             You are a healthcare risk advisor.
 
-            Explain this individual hospital waterfall plot in business terms. 
-            Explain all the risky features in decreasing order of importance and their impact in a key value format.
+            Explain the top 3 risky features in decreasing order of importance and their impact in a key value format.
 
             Rules:
             - No introduction
@@ -613,10 +612,7 @@ async def waterfall_explanation(request: Request):
             - Do not invent data
 
             What to cover:
-            1. Overall risk situation for this hospital
-            2. Main factors pushing risk upward
-            3. Main factors reducing risk
-            4. Recommended business action
+            1. Main factors pushing risk upward
 
             Data:
             {llm_payload}
