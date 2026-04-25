@@ -614,10 +614,17 @@ async def waterfall_explanation(request: Request):
         Structure (MANDATORY):
 
         1. Risk Drivers (Top 3 increasing factors)
-        - Feature: value → why it increases risk
+        - Feature (actual name - not name in code): value → why it increases risk
 
         2. Risk Reducers (Top 2 decreasing factors, if any)
-        - Feature: value → how it reduces risk
+        - Feature (actual name - not name in code): value → how it reduces risk
+
+        3. Overall Interpretation
+        - Why this hospital is classified at this risk level
+        - What pattern is visible (financial stress / operational issue / payment delay etc.)
+
+        4. Actionable Insight
+        - 2–3 clear actions business should take
 
         Data:
         {llm_payload}"""
