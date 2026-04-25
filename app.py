@@ -601,7 +601,7 @@ async def waterfall_explanation(request: Request):
             You are a healthcare risk advisor.
 
             Explain this individual hospital waterfall plot in business terms. 
-            Explain all the features in decreasing order of importance and their impact in a key value format.
+            Explain all the risky features in decreasing order of importance and their impact in a key value format.
 
             Rules:
             - No introduction
