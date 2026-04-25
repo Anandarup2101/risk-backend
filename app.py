@@ -49,6 +49,10 @@ from utils.individual_explainability import (
     get_global_pdp_data,
 )
 
+from utils.llm_utils import (
+    summarize_shap_for_llm
+)
+
 load_dotenv()
 
 app = FastAPI()
@@ -260,27 +264,246 @@ def dashboard(filters: DashboardFilters):
         "table": table,
     })
 
+from fastapi import Request
 
+@app.post("/llm/dashboard-overview")
+async def dashboard_overview(request: Request):
+    try:
+        data = await request.json()
+
+        cards = data.get("cards", {})
+        charts = data.get("charts", {})
+        table = data.get("table", [])
+
+        donut = charts.get("donut", {})
+        exposure_by_tier = charts.get("line", [])
+        specialty_donut = charts.get("specialty_donut", {})
+        bubble = charts.get("bubble", [])
+
+        top_risky_hospitals = sorted(
+            table,
+            key=lambda x: float(x.get("risk_score", 0) or 0),
+            reverse=True
+        )[:5]
+
+        top_exposure_hospitals = sorted(
+            table,
+            key=lambda x: float(x.get("ar_exposure", 0) or 0),
+            reverse=True
+        )[:5]
+
+        overview_payload = {
+            "cards": cards,
+            "risk_distribution": {
+                "labels": donut.get("labels", []),
+                "values": donut.get("values", [])
+            },
+            "exposure_by_tier": exposure_by_tier,
+            "specialty_distribution": {
+                "labels": specialty_donut.get("labels", []),
+                "values": specialty_donut.get("values", [])
+            },
+            "top_risky_hospitals": [
+                {
+                    "hospital_name": h.get("hospital_name"),
+                    "risk_score": h.get("risk_score"),
+                    "risk_tier": h.get("risk_tier"),
+                    "ar_exposure": h.get("ar_exposure"),
+                    "specialty": h.get("specialty"),
+                    "dso_30d": h.get("dso_30d"),
+                    "delay_ratio": h.get("delay_ratio"),
+                    "ops_stress": h.get("ops_stress")
+                }
+                for h in top_risky_hospitals
+            ],
+            "top_exposure_hospitals": [
+                {
+                    "hospital_name": h.get("hospital_name"),
+                    "risk_score": h.get("risk_score"),
+                    "risk_tier": h.get("risk_tier"),
+                    "ar_exposure": h.get("ar_exposure"),
+                    "specialty": h.get("specialty")
+                }
+                for h in top_exposure_hospitals
+            ],
+            "bubble_summary": {
+                "total_points": len(bubble),
+                "high_risk_points": len([
+                    b for b in bubble if b.get("risk_tier") == "High"
+                ]),
+                "critical_points": len([
+                    b for b in bubble if b.get("risk_tier") == "Critical"
+                ])
+            }
+        }
+
+        prompt = f"""
+            You are a business risk advisor.
+
+            Write a sharp executive overview of this dashboard. 
+            Give an overview that will help business leaders. Explain technicalities of the data.
+
+            Tell how the model has generated outputs. Explain the sections in the dashboard.
+
+            explain the figures.
+            Rules:
+            - No introduction
+            - Max 120 words
+            - No repetition of raw numbers unless necessary
+            - Focus on interpretation, not description
+
+            Generate Separate Paragraphs:
+            1. What is the situation? (1–2 lines)
+            2. Why is this risky? (business impact)
+            3. What is driving the risk? (patterns, concentration)
+            4. What should leadership do next? (clear actions)
+
+            Avoid:
+            - Listing all numbers
+            - Restating chart data without explaination
+            - Generic phrases
+
+            Dashboard data:
+            {overview_payload}
+            """
+        response = client.chat.completions.create(
+            model=DEPLOYMENT_NAME,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a healthcare risk intelligence assistant. Write concise executive summaries."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            temperature=0.2,
+            max_tokens=250
+        )
+
+        overview = str(response.choices[0].message.content or "")
+
+        return {
+            "overview": overview
+        }
+
+    except Exception as e:
+        return {
+            "overview": "Unable to generate dashboard overview.",
+            "error": str(e)
+        }
 # ---------------- GLOBAL SHAP ----------------
-
-# @app.get("/global-shap")
-# def global_explainability():
-#     df = get_processed_data().copy()
-
-#     X = df[features].copy()
-#     X = X.replace([np.inf, -np.inf], 0).fillna(0)
-
-#     return to_python_type({
-#         "shap_summary": get_shap_summary(X),
-#         "shap_bar": get_shap_bar(X),
-#     })
 
 @app.get("/global-shap")
 def global_explainability():
-    return {
+    compact_payload = summarize_shap_for_llm(
+        SHAP_SUMMARY,
+    )
+
+    summary_explanation = ""
+    bar_explanation = ""
+
+    try:
+        summary_prompt = f"""
+            You are a healthcare risk advisor.
+
+            Explain what this SHAP beeswarm plot is showing about the CURRENT dataset.
+
+            Rules:
+            - No introduction
+            - Max 120 words
+            - Do NOT explain what SHAP is
+            - Focus on what is actually happening in this data
+            - Interpret the values, not theory
+
+            What to cover:
+            - Which factors are actively increasing risk in this dataset
+            - Which factors are reducing risk (if any)
+            - Whether impact is consistent or mixed across hospitals
+            - What this reveals about operational or financial stress patterns
+
+            Then:
+            - Give 2–3 business insights based on this behavior            
+            {compact_payload.get("summary_plot_interpretation_data")}
+            """
+
+        summary_response = client.chat.completions.create(
+            model=DEPLOYMENT_NAME,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You explain ML model plots in simple healthcare business language."
+                },
+                {
+                    "role": "user",
+                    "content": summary_prompt
+                }
+            ],
+            temperature=0.2,
+            max_tokens=220
+        )
+
+        summary_explanation = str(summary_response.choices[0].message.content or "")
+
+    except Exception as e:
+        summary_explanation = f"Unable to generate beeswarm explanation: {str(e)}"
+
+    try:
+        bar_prompt = f"""
+                You are a healthcare risk advisor.
+
+                Explain what this SHAP bar plot shows about the CURRENT drivers of risk.
+
+                Rules:
+                - No introduction
+                - Max 120 words
+                - Do NOT explain what SHAP is
+                - Focus on ranking and dominance of factors
+                - Interpret actual values, not general concepts
+
+                What to cover:
+                - Which factors dominate risk contribution
+                - Whether risk is concentrated in a few drivers or spread out
+                - What this implies about the system (localized vs systemic risk)
+
+                Then:
+                - Give 2–3 business actions based on these drivers
+
+                Data:
+                {SHAP_BAR}
+            """
+
+        bar_response = client.chat.completions.create(
+            model=DEPLOYMENT_NAME,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You explain ML model plots in simple healthcare business language."
+                },
+                {
+                    "role": "user",
+                    "content": bar_prompt
+                }
+            ],
+            temperature=0.2,
+            max_tokens=220
+        )
+
+        bar_explanation = str(bar_response.choices[0].message.content or "")
+
+    except Exception as e:
+        bar_explanation = f"Unable to generate bar plot explanation: {str(e)}"
+
+    return to_python_type({
         "shap_summary": SHAP_SUMMARY,
-        "shap_bar": SHAP_BAR
-    }
+        "shap_bar": SHAP_BAR,
+        "summary_explanation": summary_explanation,
+        "bar_explanation": bar_explanation,
+        "explanation_payload": compact_payload
+    })
+
+
 
 # ---------------- INDIVIDUAL SHAP ----------------
 
@@ -319,69 +542,118 @@ async def individual_explainability(request: Request):
         "tree_vote": get_tree_vote(X_hospital),
         "pdp_plots": get_pdp_from_cache(row, PDP_DATA, SHAP_BAR)
     })
-    
-# @app.post("/individual-hospital")
-# async def individual_explainability(request: Request):
-#     data = await request.json()
-#     hospital_name = data.get("hospital_name")
 
-#     if not hospital_name:
-#         raise HTTPException(status_code=400, detail="hospital_name required")
+# ---------------- WATERFALL LLM EXPLANATION ----------------
 
-#     df = get_processed_data().copy()
-#     df = df.replace([np.inf, -np.inf], 0).fillna(0)
+@app.post("/llm/waterfall-explanation")
+async def waterfall_explanation(request: Request):
+    try:
+        data = await request.json()
 
-#     selected = df[df["hospital_name"] == hospital_name]
+        hospital = data.get("hospital", {}) or {}
+        waterfall = data.get("waterfall", {}) or {}
+        features = waterfall.get("features", []) or []
 
-#     if selected.empty:
-#         raise HTTPException(status_code=404, detail="Hospital not found")
+        if not features:
+            return {
+                "explanation": "No waterfall features available for explanation."
+            }
 
-#     idx = int(selected.index[0])
-#     row = selected.iloc[0]
-#     X_hospital = selected[features].iloc[[0]].copy().fillna(0)
+        top_features = sorted(
+            features,
+            key=lambda x: float(x.get("abs_shap_value", 0) or 0),
+            reverse=True
+        )
 
-#     return to_python_type({
-#         "hospital": {
-#             "hospital_name": str(row["hospital_name"]),
-#             "risk_score": float(row["risk_score"]),
-#             "risk_tier": str(row["risk_tier"]),
-#             "trend_indicator": int(row["dso_trend"]) if pd.notna(row.get("dso_trend")) else None,
-#             "location": str(row["location"]) if pd.notna(row.get("location")) else None,
-#             "specialty": str(row["specialty"]) if pd.notna(row.get("specialty")) else None,
-#             "latitude": float(row["latitude"]) if pd.notna(row.get("latitude")) else None,
-#             "longitude": float(row["longitude"]) if pd.notna(row.get("longitude")) else None,
-#         },
-#         "waterfall": get_waterfall(idx),
-#         "tree_vote": get_tree_vote(X_hospital),
-#         "pdp_plots": get_pdp_actions(row),
-#     })
+        increasing_features = [
+            {
+                "feature": f.get("feature"),
+                "feature_value": f.get("feature_value"),
+                "impact": f.get("shap_value")
+            }
+            for f in top_features
+            if f.get("direction") == "increase"
+        ]
 
+        decreasing_features = [
+            {
+                "feature": f.get("feature"),
+                "feature_value": f.get("feature_value"),
+                "impact": f.get("shap_value")
+            }
+            for f in top_features
+            if f.get("direction") == "decrease"
+        ]
 
+        llm_payload = {
+            "hospital": {
+                "hospital_name": hospital.get("hospital_name"),
+                "risk_score": hospital.get("risk_score"),
+                "risk_tier": hospital.get("risk_tier"),
+                "specialty": hospital.get("specialty"),
+                "trend_indicator": hospital.get("trend_indicator")
+            },
+            "top_risk_increasing_factors": increasing_features,
+            "top_risk_reducing_factors": decreasing_features
+        }
+
+        prompt = f"""
+            You are a healthcare risk advisor.
+
+            Explain this individual hospital waterfall plot in business terms. 
+            Explain all the features in decreasing order of importance and their impact in a key value format.
+
+            Rules:
+            - No introduction
+            - Max 140 words
+            - Do not explain SHAP theory
+            - Explain why this hospital got its current risk score
+            - Separate risk-increasing and risk-reducing drivers
+            - Focus on what business users should act on
+            - Do not invent data
+
+            What to cover:
+            1. Overall risk situation for this hospital
+            2. Main factors pushing risk upward
+            3. Main factors reducing risk
+            4. Recommended business action
+
+            Data:
+            {llm_payload}
+            """
+
+        response = client.chat.completions.create(
+            model=DEPLOYMENT_NAME,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You explain hospital risk model outputs in simple business language."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            temperature=0.2,
+            max_tokens=230
+        )
+
+        return {
+            "explanation": str(response.choices[0].message.content or ""),
+            "explanation_payload": llm_payload
+        }
+
+    except Exception as e:
+        return {
+            "explanation": "Unable to generate waterfall explanation.",
+            "error": str(e)
+        }
 # ---------------- CHARTS ----------------
 
 @app.post("/charts/geo-heatmap")
 async def geo_heatmap_chart(request: Request):
     filters = await request.json() or {}
     df = get_processed_data().copy()
-
-    # -----------------------------
-    # LOCATION FILTER
-    # Expected shape:
-    # {
-    #   "location": {
-    #       "min_lat": 47,
-    #       "max_lat": 55,
-    #       "min_lon": 5.5,
-    #       "max_lon": 15.5
-    #   },
-    #   "exposure_range": {
-    #       "min": 100000,
-    #       "max": 920000
-    #   },
-    #   "specialty": [...],
-    #   "risk_tier": [...]
-    # }
-    # -----------------------------
     location = filters.get("location", {}) or {}
 
     min_lat = location.get("min_lat")
@@ -428,27 +700,6 @@ async def geo_heatmap_chart(request: Request):
 
     return to_python_type(get_geo_heatmap_data(df))
 
-# @app.post("/charts/geo-heatmap")
-# async def geo_heatmap_chart(request: Request):
-#     filters = await request.json() or {}
-#     df = get_processed_data().copy()
-
-#     min_lat = filters.get("min_lat")
-#     max_lat = filters.get("max_lat")
-#     min_lon = filters.get("min_lon")
-#     max_lon = filters.get("max_lon")
-
-#     if all(v is not None for v in [min_lat, max_lat, min_lon, max_lon]):
-#         df = df[
-#             (df["latitude"] >= float(min_lat))
-#             & (df["latitude"] <= float(max_lat))
-#             & (df["longitude"] >= float(min_lon))
-#             & (df["longitude"] <= float(max_lon))
-#         ]
-
-#     return to_python_type(get_geo_heatmap_data(df))
-
-
 @app.post("/charts/cluster-scatter")
 async def cluster_scatter_chart(request: Request):
     data = await request.json() or {}
@@ -457,24 +708,6 @@ async def cluster_scatter_chart(request: Request):
 
     df = get_processed_data().copy()
 
-    # -----------------------------
-    # LOCATION FILTER
-    # Expected inside filters:
-    # {
-    #   "location": {
-    #       "min_lat": 47,
-    #       "max_lat": 55,
-    #       "min_lon": 5.5,
-    #       "max_lon": 15.5
-    #   },
-    #   "exposure_range": {
-    #       "min": 100000,
-    #       "max": 920000
-    #   },
-    #   "specialty": [...],
-    #   "risk_tier": [...]
-    # }
-    # -----------------------------
     location = filters.get("location", {}) or {}
 
     min_lat = location.get("min_lat")
@@ -561,18 +794,6 @@ async def ask_llm(request: Request):
             "answer": "Error generating response",
             "error": str(e)
         }
-
-# @app.post("/charts/cluster-scatter")
-# async def cluster_scatter_chart(request: Request):
-#     data = await request.json() or {}
-#     n_clusters = data.get("n_clusters", 3)
-
-#     df = get_processed_data().copy()
-
-#     return to_python_type(
-#         get_cluster_scatter_data(df=df, n_clusters=n_clusters)
-#     )
-
 
 # ---------------- CACHE ----------------
 
