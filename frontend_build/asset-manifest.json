@@ -1,0 +1,15 @@
+{
+  "files": {
+    "main.css": "/static/css/main.15e3e6e3.css",
+    "main.js": "/static/js/main.aa4e39e9.js",
+    "static/media/risk-icon.png": "/static/media/risk-icon.c19e7d4787cbc70b6a95.png",
+    "static/media/background.png": "/static/media/background.9b8e5bc0a079b454a4a6.png",
+    "index.html": "/index.html",
+    "main.15e3e6e3.css.map": "/static/css/main.15e3e6e3.css.map",
+    "main.aa4e39e9.js.map": "/static/js/main.aa4e39e9.js.map"
+  },
+  "entrypoints": [
+    "static/css/main.15e3e6e3.css",
+    "static/js/main.aa4e39e9.js"
+  ]
+}
