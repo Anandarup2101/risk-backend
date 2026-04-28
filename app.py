@@ -3,11 +3,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional
 
+import json
 import numpy as np
 import pandas as pd
+
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import json
 
 # Uncomment these only when serving React build from FastAPI
 # from fastapi.responses import FileResponse
@@ -17,12 +18,6 @@ from services.data_loader import load_data
 from services.feature_engineering import engineer_features
 from services.prediction import run_prediction, features
 
-import os
-from dotenv import load_dotenv
-from fastapi import FastAPI
-from pydantic import BaseModel
-from openai import AzureOpenAI
-
 from utils.charts import (
     get_donut_data,
     get_bubble_data,
@@ -30,30 +25,29 @@ from utils.charts import (
     get_geo_heatmap_data,
     get_cluster_scatter_data,
     get_speciality_donut_data,
-    format_number
+    format_number,
 )
 
 from utils.global_explainability import (
-    get_shap_summary,
-    get_shap_bar,
     get_global_shap_data,
     get_global_feature_matrix,
 )
 
 from utils.individual_explainability import (
-    get_waterfall,
     get_waterfall_from_cache,
     get_tree_vote,
-    get_pdp_actions,
     get_pdp_from_cache,
     get_global_pdp_data,
 )
 
-from utils.llm_utils import (
-    summarize_shap_for_llm
-)
+from utils.llm_utils import summarize_shap_for_llm
 
-load_dotenv()
+from utils.llm_graph import (
+    run_llm_task,
+    run_global_shap_explanations,
+    clear_chat_memory,
+    CHAT_MEMORY,
+)
 
 app = FastAPI()
 
@@ -67,7 +61,7 @@ USERS_PATH = BASE_DIR / "services" / "inputs" / "users.xlsx"
 # FRONTEND_STATIC_DIR = FRONTEND_DIR / "static"
 # FRONTEND_INDEX = FRONTEND_DIR / "index.html"
 
-# ---------------- CACHE ----------------
+# ---------------- CACHE FILES ----------------
 
 CACHE_DIR = BASE_DIR / "data_cache"
 
@@ -87,9 +81,7 @@ with open(CACHE_DIR / "waterfall_data.json") as f:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "*"
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -121,15 +113,6 @@ class DashboardFilters(BaseModel):
     risk_tier: Optional[List[str]] = None
     exposure_range: Optional[ExposureRange] = None
 
-# ---------------- LLM ----------------
-
-client = AzureOpenAI(
-    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-    api_version=os.getenv("AZURE_OPENAI_API_VERSION")
-)
-
-DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
 
 # ---------------- SAFE JSON ----------------
 
@@ -146,9 +129,18 @@ def to_python_type(obj):
         return float(obj)
     if isinstance(obj, np.bool_):
         return bool(obj)
-    if pd.isna(obj):
-        return None
+
+    try:
+        if pd.isna(obj):
+            return None
+    except Exception:
+        pass
+
     return obj
+
+
+def clean_df(df: pd.DataFrame) -> pd.DataFrame:
+    return df.replace([np.inf, -np.inf], 0).fillna(0)
 
 
 # ---------------- USERS ----------------
@@ -186,7 +178,7 @@ async def login(request: Request):
     return {
         "username": db_user,
         "role": role,
-        "message": "Login successful"
+        "message": "Login successful",
     }
 
 
@@ -205,16 +197,12 @@ def health():
     return {"status": "ok"}
 
 
-# ---------------- DASHBOARD ----------------
+# ---------------- FILTER HELPERS ----------------
 
-@app.post("/dashboard")
-def dashboard(filters: DashboardFilters):
-    df = get_processed_data().copy()
-
-    # df.to_excel("dataframe.xlsx", index=False)
+def apply_dashboard_filters(df: pd.DataFrame, filters: DashboardFilters) -> pd.DataFrame:
+    df = df.copy()
 
     if filters.location:
-
         df = df[
             (df["latitude"] >= filters.location.min_lat)
             & (df["latitude"] <= filters.location.max_lat)
@@ -234,18 +222,72 @@ def dashboard(filters: DashboardFilters):
             & (df["ar_exposure"] <= filters.exposure_range.max)
         ]
 
-    df = df.replace([np.inf, -np.inf], 0).fillna(0)
+    return clean_df(df)
+
+
+def apply_dict_filters(df: pd.DataFrame, filters: dict) -> pd.DataFrame:
+    df = df.copy()
+
+    location = filters.get("location", {}) or {}
+
+    min_lat = location.get("min_lat")
+    max_lat = location.get("max_lat")
+    min_lon = location.get("min_lon")
+    max_lon = location.get("max_lon")
+
+    if all(v is not None for v in [min_lat, max_lat, min_lon, max_lon]):
+        df = df[
+            (df["latitude"] >= float(min_lat))
+            & (df["latitude"] <= float(max_lat))
+            & (df["longitude"] >= float(min_lon))
+            & (df["longitude"] <= float(max_lon))
+        ]
+
+    specialty = filters.get("specialty")
+    if specialty:
+        df = df[df["specialty"].isin(specialty)]
+
+    risk_tier = filters.get("risk_tier")
+    if risk_tier:
+        df = df[df["risk_tier"].isin(risk_tier)]
+
+    exposure_range = filters.get("exposure_range", {}) or {}
+    min_exp = exposure_range.get("min")
+    max_exp = exposure_range.get("max")
+
+    if min_exp is not None and max_exp is not None:
+        df = df[
+            (df["ar_exposure"] >= float(min_exp))
+            & (df["ar_exposure"] <= float(max_exp))
+        ]
+
+    return clean_df(df)
+
+
+# ---------------- DASHBOARD DATA BUILDER ----------------
+
+def build_dashboard_response(df: pd.DataFrame):
+    df = clean_df(df)
 
     total_exposure = float(df["ar_exposure"].sum()) if "ar_exposure" in df.columns else 0.0
-    risky_exposure = float(df[df["risk_flag"] == 1]["ar_exposure"].sum()) if len(df) > 0 else 0.0
 
-    exposure_at_risk = round((risky_exposure / total_exposure) * 100, 2) if total_exposure > 0 else 0.0
+    risky_exposure = (
+        float(df[df["risk_flag"] == 1]["ar_exposure"].sum())
+        if len(df) > 0 and "risk_flag" in df.columns and "ar_exposure" in df.columns
+        else 0.0
+    )
+
+    exposure_at_risk = (
+        round((risky_exposure / total_exposure) * 100, 2)
+        if total_exposure > 0
+        else 0.0
+    )
 
     cards = {
         "total_hospitals": int(len(df)),
         "total_at_risk": int(df["risk_flag"].sum()) if "risk_flag" in df.columns else 0,
         "total_exposure": format_number(total_exposure),
-        "total_exposure_raw": total_exposure, 
+        "total_exposure_raw": total_exposure,
         "exposure_at_risk": exposure_at_risk,
     }
 
@@ -253,18 +295,203 @@ def dashboard(filters: DashboardFilters):
         "donut": get_donut_data(df),
         "bubble": get_bubble_data(df),
         "line": get_line_data(df),
-        "specialty_donut":get_speciality_donut_data(df)
+        "specialty_donut": get_speciality_donut_data(df),
     }
 
     table = df.to_dict(orient="records")
 
-    return to_python_type({
-        "cards": cards,
-        "charts": charts,
-        "table": table,
-    })
+    return to_python_type(
+        {
+            "cards": cards,
+            "charts": charts,
+            "table": table,
+        }
+    )
 
-from fastapi import Request
+
+# ---------------- DASHBOARD ----------------
+
+@app.post("/dashboard")
+def dashboard(filters: DashboardFilters):
+    df = get_processed_data().copy()
+    df = apply_dashboard_filters(df, filters)
+    return build_dashboard_response(df)
+
+
+# ---------------- LLM CONTEXT HELPERS ----------------
+
+def build_dashboard_overview_payload(cards: dict, charts: dict, table: list) -> dict:
+    donut = charts.get("donut", {})
+    exposure_by_tier = charts.get("line", [])
+    specialty_donut = charts.get("specialty_donut", {})
+    bubble = charts.get("bubble", [])
+
+    top_risky_hospitals = sorted(
+        table,
+        key=lambda x: float(x.get("risk_score", 0) or 0),
+        reverse=True,
+    )[:5]
+
+    top_exposure_hospitals = sorted(
+        table,
+        key=lambda x: float(x.get("ar_exposure", 0) or 0),
+        reverse=True,
+    )[:5]
+
+    return {
+        "cards": cards,
+        "risk_distribution": {
+            "labels": donut.get("labels", []),
+            "values": donut.get("values", []),
+        },
+        "exposure_by_tier": exposure_by_tier,
+        "specialty_distribution": {
+            "labels": specialty_donut.get("labels", []),
+            "values": specialty_donut.get("values", []),
+        },
+        "top_risky_hospitals": [
+            {
+                "hospital_name": h.get("hospital_name"),
+                "risk_score": h.get("risk_score"),
+                "risk_tier": h.get("risk_tier"),
+                "ar_exposure": h.get("ar_exposure"),
+                "specialty": h.get("specialty"),
+                "dso_30d": h.get("dso_30d"),
+                "delay_ratio": h.get("delay_ratio"),
+                "ops_stress": h.get("ops_stress"),
+            }
+            for h in top_risky_hospitals
+        ],
+        "top_exposure_hospitals": [
+            {
+                "hospital_name": h.get("hospital_name"),
+                "risk_score": h.get("risk_score"),
+                "risk_tier": h.get("risk_tier"),
+                "ar_exposure": h.get("ar_exposure"),
+                "specialty": h.get("specialty"),
+            }
+            for h in top_exposure_hospitals
+        ],
+        "bubble_summary": {
+            "total_points": len(bubble),
+            "high_risk_points": len(
+                [b for b in bubble if b.get("risk_tier") == "High"]
+            ),
+            "critical_points": len(
+                [b for b in bubble if b.get("risk_tier") == "Critical"]
+            ),
+        },
+    }
+
+
+def find_hospital_from_text(text: str, df: pd.DataFrame):
+    text_clean = str(text or "").strip().lower()
+
+    if not text_clean or "hospital_name" not in df.columns:
+        return None
+
+    hospital_names = df["hospital_name"].dropna().astype(str).unique().tolist()
+
+    hospital_names = sorted(hospital_names, key=len, reverse=True)
+
+    for name in hospital_names:
+        if str(name).strip().lower() in text_clean:
+            return str(name)
+
+    return None
+
+
+def extract_hospital_from_memory(session_id: str, df: pd.DataFrame):
+    memory = CHAT_MEMORY.get(session_id, [])
+
+    for msg in reversed(memory):
+        content = str(msg.get("content", ""))
+        hospital_name = find_hospital_from_text(content, df)
+
+        if hospital_name:
+            return hospital_name
+
+    return None
+
+
+def build_individual_hospital_context(hospital_name: str):
+    df = get_processed_data().copy()
+    df = clean_df(df)
+
+    selected = df[
+        df["hospital_name"].astype(str).str.strip().str.lower()
+        == str(hospital_name).strip().lower()
+    ]
+
+    if selected.empty:
+        return None
+
+    row = selected.iloc[0]
+    X_hospital = selected[features].iloc[[0]].copy().fillna(0)
+
+    return to_python_type(
+        {
+            "hospital": {
+                "hospital_name": str(row.get("hospital_name", "")),
+                "risk_score": float(row.get("risk_score", 0)),
+                "risk_tier": str(row.get("risk_tier", "Unknown")),
+                "trend_indicator": int(row["dso_trend"])
+                if pd.notna(row.get("dso_trend"))
+                else None,
+                "location": str(row.get("location"))
+                if pd.notna(row.get("location"))
+                else None,
+                "specialty": str(row.get("specialty"))
+                if pd.notna(row.get("specialty"))
+                else None,
+                "ar_exposure": float(row.get("ar_exposure", 0) or 0),
+                "dso_30d": float(row.get("dso_30d", 0) or 0),
+                "delay_ratio": float(row.get("delay_ratio", 0) or 0),
+                "ops_stress": float(row.get("ops_stress", 0) or 0),
+            },
+            "waterfall": get_waterfall_from_cache(hospital_name, WF_DATA),
+            "tree_vote": get_tree_vote(X_hospital),
+            "pdp_plots": get_pdp_from_cache(row, PDP_DATA, SHAP_BAR),
+        }
+    )
+
+
+def build_smart_ask_context(prompt: str, session_id: str = "default") -> dict:
+    df = get_processed_data().copy()
+    df = clean_df(df)
+
+    dashboard_payload = build_dashboard_response(df)
+
+    compact_shap_payload = summarize_shap_for_llm(SHAP_SUMMARY)
+
+    context = {
+        "full_dashboard_data": dashboard_payload,
+        "global_model_context": {
+            "shap_summary_compact": compact_shap_payload,
+            "shap_bar": SHAP_BAR,
+        },
+        "available_columns": list(df.columns),
+        "instruction_to_llm": (
+            "Use full_dashboard_data.table when the user asks for all hospitals, "
+            "lists, filtered groups, critical hospitals, specialty-specific hospitals, "
+            "or hospital comparisons. Do not rely only on top_risky_hospitals."
+        ),
+    }
+
+    hospital_name = find_hospital_from_text(prompt, df)
+
+    if not hospital_name:
+        hospital_name = extract_hospital_from_memory(session_id, df)
+
+    if hospital_name:
+        context["matched_hospital_name"] = hospital_name
+        context["individual_hospital_context"] = build_individual_hospital_context(
+            hospital_name
+        )
+
+    return to_python_type(context)
+
+# ---------------- LLM: DASHBOARD OVERVIEW ----------------
 
 @app.post("/llm/dashboard-overview")
 async def dashboard_overview(request: Request):
@@ -275,237 +502,61 @@ async def dashboard_overview(request: Request):
         charts = data.get("charts", {})
         table = data.get("table", [])
 
-        donut = charts.get("donut", {})
-        exposure_by_tier = charts.get("line", [])
-        specialty_donut = charts.get("specialty_donut", {})
-        bubble = charts.get("bubble", [])
+        overview_payload = build_dashboard_overview_payload(cards, charts, table)
 
-        top_risky_hospitals = sorted(
-            table,
-            key=lambda x: float(x.get("risk_score", 0) or 0),
-            reverse=True
-        )[:5]
-
-        top_exposure_hospitals = sorted(
-            table,
-            key=lambda x: float(x.get("ar_exposure", 0) or 0),
-            reverse=True
-        )[:5]
-
-        overview_payload = {
-            "cards": cards,
-            "risk_distribution": {
-                "labels": donut.get("labels", []),
-                "values": donut.get("values", [])
+        result = run_llm_task(
+            "dashboard_overview",
+            {
+                "overview_payload": overview_payload,
             },
-            "exposure_by_tier": exposure_by_tier,
-            "specialty_distribution": {
-                "labels": specialty_donut.get("labels", []),
-                "values": specialty_donut.get("values", [])
-            },
-            "top_risky_hospitals": [
-                {
-                    "hospital_name": h.get("hospital_name"),
-                    "risk_score": h.get("risk_score"),
-                    "risk_tier": h.get("risk_tier"),
-                    "ar_exposure": h.get("ar_exposure"),
-                    "specialty": h.get("specialty"),
-                    "dso_30d": h.get("dso_30d"),
-                    "delay_ratio": h.get("delay_ratio"),
-                    "ops_stress": h.get("ops_stress")
-                }
-                for h in top_risky_hospitals
-            ],
-            "top_exposure_hospitals": [
-                {
-                    "hospital_name": h.get("hospital_name"),
-                    "risk_score": h.get("risk_score"),
-                    "risk_tier": h.get("risk_tier"),
-                    "ar_exposure": h.get("ar_exposure"),
-                    "specialty": h.get("specialty")
-                }
-                for h in top_exposure_hospitals
-            ],
-            "bubble_summary": {
-                "total_points": len(bubble),
-                "high_risk_points": len([
-                    b for b in bubble if b.get("risk_tier") == "High"
-                ]),
-                "critical_points": len([
-                    b for b in bubble if b.get("risk_tier") == "Critical"
-                ])
-            }
-        }
-
-        prompt = f"""
-            You are a business risk advisor.
-
-            Write a sharp executive overview of this dashboard. 
-            Give an overview that will help business leaders. Explain technicalities of the data.
-
-            Tell how the model has generated outputs. Explain the sections in the dashboard.
-
-            explain the figures.
-            Rules:
-            - No introduction
-            - Max 120 words
-            - No repetition of raw numbers unless necessary
-            - Focus on interpretation, not description
-
-            Generate Separate Paragraphs:
-            1. What is the situation? (1–2 lines)
-            2. Why is this risky? (business impact)
-            3. What is driving the risk? (patterns, concentration)
-            4. What should leadership do next? (clear actions)
-
-            Avoid:
-            - Listing all numbers
-            - Restating chart data without explaination
-            - Generic phrases
-
-            Dashboard data:
-            {overview_payload}
-            """
-        response = client.chat.completions.create(
-            model=DEPLOYMENT_NAME,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a healthcare risk intelligence assistant. Write concise executive summaries."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            temperature=0.2,
-            max_tokens=250
         )
 
-        overview = str(response.choices[0].message.content or "")
+        if result.get("error"):
+            return {
+                "overview": "Unable to generate dashboard overview.",
+                "error": result.get("error"),
+            }
 
         return {
-            "overview": overview
+            "overview": result.get("overview", "Unable to generate dashboard overview.")
         }
 
     except Exception as e:
         return {
             "overview": "Unable to generate dashboard overview.",
-            "error": str(e)
+            "error": str(e),
         }
+
+
 # ---------------- GLOBAL SHAP ----------------
 
 @app.get("/global-shap")
 def global_explainability():
-    compact_payload = summarize_shap_for_llm(
-        SHAP_SUMMARY,
+    compact_payload = summarize_shap_for_llm(SHAP_SUMMARY)
+
+    llm_result = run_global_shap_explanations(
+        compact_payload=compact_payload,
+        shap_bar=SHAP_BAR,
     )
 
-    summary_explanation = ""
-    bar_explanation = ""
-
-    try:
-        summary_prompt = f"""
-            You are a healthcare risk advisor.
-
-            Explain what this SHAP beeswarm plot is showing about the CURRENT dataset.
-
-            Rules:
-            - No introduction
-            - Max 120 words
-            - Do NOT explain what SHAP is
-            - Focus on what is actually happening in this data
-            - Interpret the values, not theory
-
-            What to cover:
-            - Which factors are actively increasing risk in this dataset
-            - Which factors are reducing risk (if any)
-            - Whether impact is consistent or mixed across hospitals
-            - What this reveals about operational or financial stress patterns
-
-            Then:
-            - Give 2–3 business insights based on this behavior            
-            {compact_payload.get("summary_plot_interpretation_data")}
-            """
-
-        summary_response = client.chat.completions.create(
-            model=DEPLOYMENT_NAME,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You explain ML model plots in simple healthcare business language."
-                },
-                {
-                    "role": "user",
-                    "content": summary_prompt
-                }
-            ],
-            temperature=0.2,
-            max_tokens=220
-        )
-
-        summary_explanation = str(summary_response.choices[0].message.content or "")
-
-    except Exception as e:
-        summary_explanation = f"Unable to generate beeswarm explanation: {str(e)}"
-
-    try:
-        bar_prompt = f"""
-                You are a healthcare risk advisor.
-
-                Explain what this SHAP bar plot shows about the CURRENT drivers of risk.
-
-                Rules:
-                - No introduction
-                - Max 120 words
-                - Do NOT explain what SHAP is
-                - Focus on ranking and dominance of factors
-                - Interpret actual values, not general concepts
-
-                What to cover:
-                - Which factors dominate risk contribution
-                - Whether risk is concentrated in a few drivers or spread out
-                - What this implies about the system (localized vs systemic risk)
-
-                Then:
-                - Give 2–3 business actions based on these drivers
-
-                Data:
-                {SHAP_BAR}
-            """
-
-        bar_response = client.chat.completions.create(
-            model=DEPLOYMENT_NAME,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You explain ML model plots in simple healthcare business language."
-                },
-                {
-                    "role": "user",
-                    "content": bar_prompt
-                }
-            ],
-            temperature=0.2,
-            max_tokens=220
-        )
-
-        bar_explanation = str(bar_response.choices[0].message.content or "")
-
-    except Exception as e:
-        bar_explanation = f"Unable to generate bar plot explanation: {str(e)}"
-
-    return to_python_type({
-        "shap_summary": SHAP_SUMMARY,
-        "shap_bar": SHAP_BAR,
-        "summary_explanation": summary_explanation,
-        "bar_explanation": bar_explanation,
-        "explanation_payload": compact_payload
-    })
+    return to_python_type(
+        {
+            "shap_summary": SHAP_SUMMARY,
+            "shap_bar": SHAP_BAR,
+            "summary_explanation": llm_result.get(
+                "summary_explanation",
+                "Unable to generate beeswarm explanation.",
+            ),
+            "bar_explanation": llm_result.get(
+                "bar_explanation",
+                "Unable to generate bar plot explanation.",
+            ),
+            "explanation_payload": compact_payload,
+        }
+    )
 
 
-
-# ---------------- INDIVIDUAL SHAP ----------------
+# ---------------- INDIVIDUAL HOSPITAL ----------------
 
 @app.post("/individual-hospital")
 async def individual_explainability(request: Request):
@@ -515,33 +566,13 @@ async def individual_explainability(request: Request):
     if not hospital_name:
         raise HTTPException(status_code=400, detail="hospital_name required")
 
-    df = get_processed_data().copy()
-    df = df.replace([np.inf, -np.inf], 0).fillna(0)
+    hospital_context = build_individual_hospital_context(hospital_name)
 
-    selected = df[
-        df["hospital_name"].astype(str).str.strip().str.lower()
-        == str(hospital_name).strip().lower()
-    ]
-
-    if selected.empty:
+    if not hospital_context:
         raise HTTPException(status_code=404, detail="Hospital not found")
 
-    row = selected.iloc[0]
-    X_hospital = selected[features].iloc[[0]].copy().fillna(0)
+    return to_python_type(hospital_context)
 
-    return to_python_type({
-        "hospital": {
-            "hospital_name": str(row.get("hospital_name", "")),
-            "risk_score": float(row.get("risk_score", 0)),
-            "risk_tier": str(row.get("risk_tier", "Unknown")),
-            "trend_indicator": int(row["dso_trend"]) if pd.notna(row.get("dso_trend")) else None,
-            "location": str(row.get("location")) if pd.notna(row.get("location")) else None,
-            "specialty": str(row.get("specialty")) if pd.notna(row.get("specialty")) else None,
-        },
-        "waterfall": get_waterfall_from_cache(hospital_name, WF_DATA),
-        "tree_vote": get_tree_vote(X_hospital),
-        "pdp_plots": get_pdp_from_cache(row, PDP_DATA, SHAP_BAR)
-    })
 
 # ---------------- WATERFALL LLM EXPLANATION ----------------
 
@@ -552,24 +583,24 @@ async def waterfall_explanation(request: Request):
 
         hospital = data.get("hospital", {}) or {}
         waterfall = data.get("waterfall", {}) or {}
-        features = waterfall.get("features", []) or []
+        waterfall_features = waterfall.get("features", []) or []
 
-        if not features:
+        if not waterfall_features:
             return {
                 "explanation": "No waterfall features available for explanation."
             }
 
         top_features = sorted(
-            features,
+            waterfall_features,
             key=lambda x: float(x.get("abs_shap_value", 0) or 0),
-            reverse=True
+            reverse=True,
         )
 
         increasing_features = [
             {
                 "feature": f.get("feature"),
                 "feature_value": f.get("feature_value"),
-                "impact": f.get("shap_value")
+                "impact": f.get("shap_value"),
             }
             for f in top_features
             if f.get("direction") == "increase"
@@ -579,7 +610,7 @@ async def waterfall_explanation(request: Request):
             {
                 "feature": f.get("feature"),
                 "feature_value": f.get("feature_value"),
-                "impact": f.get("shap_value")
+                "impact": f.get("shap_value"),
             }
             for f in top_features
             if f.get("direction") == "decrease"
@@ -591,121 +622,50 @@ async def waterfall_explanation(request: Request):
                 "risk_score": hospital.get("risk_score"),
                 "risk_tier": hospital.get("risk_tier"),
                 "specialty": hospital.get("specialty"),
-                "trend_indicator": hospital.get("trend_indicator")
+                "trend_indicator": hospital.get("trend_indicator"),
             },
             "top_risk_increasing_factors": increasing_features,
-            "top_risk_reducing_factors": decreasing_features
+            "top_risk_reducing_factors": decreasing_features,
         }
 
-        prompt = f"""
-        You are a healthcare risk advisor.
-
-        Explain the top 3 risky features in decreasing order of importance and their impact in a clear key-value format.
-
-        Rules:
-        - No introduction
-        - Max 140 words
-        - Give complete answers, do not stop midway
-        - Do not explain SHAP theory
-        - Do not invent data
-        - Use only provided values
-        - Keep language simple and business-focused
-
-        Structure (MANDATORY):
-
-        1. Risk Drivers (Top 3 increasing factors)
-        - Feature (actual name - not name in code): value → why it increases risk
-
-        2. Risk Reducers (Top 2 decreasing factors, if any)
-        - Feature (actual name - not name in code): value → how it reduces risk
-
-        3. Overall Interpretation
-        - Why this hospital is classified at this risk level
-        - What pattern is visible (financial stress / operational issue / payment delay etc.)
-
-        4. Actionable Insight
-        - 2–3 clear actions business should take
-
-        Data:
-        {llm_payload}"""
-
-        response = client.chat.completions.create(
-            model=DEPLOYMENT_NAME,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You explain hospital risk model outputs in simple business language."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            temperature=0.2,
-            max_tokens=230
+        result = run_llm_task(
+            "waterfall_explanation",
+            {
+                "llm_payload": llm_payload,
+            },
         )
 
+        if result.get("error"):
+            return {
+                "explanation": "Unable to generate waterfall explanation.",
+                "error": result.get("error"),
+            }
+
         return {
-            "explanation": str(response.choices[0].message.content or ""),
-            "explanation_payload": llm_payload
+            "explanation": result.get(
+                "explanation",
+                "Unable to generate waterfall explanation.",
+            ),
+            "explanation_payload": llm_payload,
         }
 
     except Exception as e:
         return {
             "explanation": "Unable to generate waterfall explanation.",
-            "error": str(e)
+            "error": str(e),
         }
+
+
 # ---------------- CHARTS ----------------
 
 @app.post("/charts/geo-heatmap")
 async def geo_heatmap_chart(request: Request):
     filters = await request.json() or {}
     df = get_processed_data().copy()
-    location = filters.get("location", {}) or {}
-
-    min_lat = location.get("min_lat")
-    max_lat = location.get("max_lat")
-    min_lon = location.get("min_lon")
-    max_lon = location.get("max_lon")
-
-    if all(v is not None for v in [min_lat, max_lat, min_lon, max_lon]):
-        df = df[
-            (df["latitude"] >= float(min_lat))
-            & (df["latitude"] <= float(max_lat))
-            & (df["longitude"] >= float(min_lon))
-            & (df["longitude"] <= float(max_lon))
-        ]
-
-    # -----------------------------
-    # SPECIALTY FILTER
-    # -----------------------------
-    specialty = filters.get("specialty")
-    if specialty:
-        df = df[df["specialty"].isin(specialty)]
-
-    # -----------------------------
-    # RISK TIER FILTER
-    # -----------------------------
-    risk_tier = filters.get("risk_tier")
-    if risk_tier:
-        df = df[df["risk_tier"].isin(risk_tier)]
-
-    # -----------------------------
-    # EXPOSURE RANGE FILTER
-    # -----------------------------
-    exposure_range = filters.get("exposure_range", {}) or {}
-    min_exp = exposure_range.get("min")
-    max_exp = exposure_range.get("max")
-
-    if min_exp is not None and max_exp is not None:
-        df = df[
-            (df["ar_exposure"] >= float(min_exp))
-            & (df["ar_exposure"] <= float(max_exp))
-        ]
-
-    df = df.replace([np.inf, -np.inf], 0).fillna(0)
+    df = apply_dict_filters(df, filters)
 
     return to_python_type(get_geo_heatmap_data(df))
+
 
 @app.post("/charts/cluster-scatter")
 async def cluster_scatter_chart(request: Request):
@@ -714,93 +674,53 @@ async def cluster_scatter_chart(request: Request):
     n_clusters = data.get("n_clusters", 3)
 
     df = get_processed_data().copy()
-
-    location = filters.get("location", {}) or {}
-
-    min_lat = location.get("min_lat")
-    max_lat = location.get("max_lat")
-    min_lon = location.get("min_lon")
-    max_lon = location.get("max_lon")
-
-    if all(v is not None for v in [min_lat, max_lat, min_lon, max_lon]):
-        df = df[
-            (df["latitude"] >= float(min_lat))
-            & (df["latitude"] <= float(max_lat))
-            & (df["longitude"] >= float(min_lon))
-            & (df["longitude"] <= float(max_lon))
-        ]
-
-    # -----------------------------
-    # SPECIALTY FILTER
-    # -----------------------------
-    specialty = filters.get("specialty")
-    if specialty:
-        df = df[df["specialty"].isin(specialty)]
-
-    # -----------------------------
-    # RISK TIER FILTER
-    # -----------------------------
-    risk_tier = filters.get("risk_tier")
-    if risk_tier:
-        df = df[df["risk_tier"].isin(risk_tier)]
-
-    # -----------------------------
-    # EXPOSURE RANGE FILTER
-    # -----------------------------
-    exposure_range = filters.get("exposure_range", {}) or {}
-    min_exp = exposure_range.get("min")
-    max_exp = exposure_range.get("max")
-
-    if min_exp is not None and max_exp is not None:
-        df = df[
-            (df["ar_exposure"] >= float(min_exp))
-            & (df["ar_exposure"] <= float(max_exp))
-        ]
-
-    df = df.replace([np.inf, -np.inf], 0).fillna(0)
+    df = apply_dict_filters(df, filters)
 
     return to_python_type(
         get_cluster_scatter_data(df=df, n_clusters=n_clusters)
     )
 
-# ---------------- LLM CALL ----------------
+
+# ---------------- CONTEXT-AWARE LLM ASK ----------------
+
 @app.post("/llm/ask")
 async def ask_llm(request: Request):
     try:
         data = await request.json()
+
         prompt = data.get("prompt")
-        print(os.getenv("AZURE_OPENAI_ENDPOINT"))
+        session_id = data.get("session_id", "default")
+
         if not prompt:
             return {"answer": "No prompt provided"}
 
-        response = client.chat.completions.create(
-            model=DEPLOYMENT_NAME,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a healthcare risk intelligence assistant. Explain in simple business terms."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            temperature=0.2,
-            max_tokens=400
+        context = build_smart_ask_context(prompt, session_id=session_id)
+
+        result = run_llm_task(
+            "smart_ask",
+            {
+                "prompt": prompt,
+                "context": context,
+                "session_id": session_id,
+            },
         )
 
-        # answer = response.choices[0].message.content
-        answer = str(response.choices[0].message.content or "")
+        if result.get("error"):
+            return {
+                "answer": "Error generating response",
+                "error": result.get("error"),
+            }
 
         return {
-            "answer": answer
+            "answer": result.get("answer", "Error generating response")
         }
 
     except Exception as e:
         return {
             "answer": "Error generating response",
-            "error": str(e)
+            "error": str(e),
         }
+
 
 # ---------------- CACHE ----------------
 
@@ -810,6 +730,7 @@ def refresh():
     get_global_shap_data.cache_clear()
     get_global_feature_matrix.cache_clear()
     get_global_pdp_data.cache_clear()
+    clear_chat_memory()
     return {"message": "Cache cleared"}
 
 
@@ -838,4 +759,5 @@ def refresh():
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
