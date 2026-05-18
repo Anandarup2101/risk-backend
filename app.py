@@ -65,6 +65,14 @@ from utils.llm_graph import (
     CHAT_MEMORY,
 )
 
+# ================= LLM SESSION =================
+from utils.chat_store import (
+    create_session,
+    list_sessions,
+    get_session_messages,
+    append_message,
+    delete_session as delete_chat_session,
+)
 
 # ================= APP =================
 
@@ -429,16 +437,68 @@ async def cluster_scatter_chart(request: Request):
 
 # ================= CHATBOT / SMART ASK =================
 
+# @app.post("/llm/ask")
+# async def ask_llm(request: Request):
+#     try:
+#         data = await request.json()
+
+#         prompt = data.get("prompt")
+#         session_id = data.get("session_id", "default")
+
+#         if not prompt:
+#             raise HTTPException(status_code=400, detail="Prompt required")
+
+#         context = build_smart_ask_context(
+#             prompt=prompt,
+#             session_id=session_id,
+#             chat_memory=CHAT_MEMORY,
+#             shap_summary=SHAP_SUMMARY,
+#             shap_bar=SHAP_BAR,
+#             wf_data=WF_DATA,
+#             pdp_data=PDP_DATA,
+#         )
+
+#         result = run_llm_task(
+#             "smart_ask",
+#             {
+#                 "prompt": prompt,
+#                 "context": context,
+#                 "session_id": session_id,
+#             },
+#         )
+
+#         if result.get("error"):
+#             return {
+#                 "answer": "Error generating response",
+#                 "error": result.get("error"),
+#             }
+
+#         return {
+#             "answer": result.get("answer", "Error generating response")
+#         }
+
+#     except HTTPException:
+#         raise
+
+#     except Exception as e:
+#         raise HTTPException(
+#             status_code=500,
+#             detail=f"LLM response generation failed: {str(e)}",
+#         )
+
 @app.post("/llm/ask")
 async def ask_llm(request: Request):
     try:
         data = await request.json()
 
-        prompt = data.get("prompt")
+        prompt     = data.get("prompt")
         session_id = data.get("session_id", "default")
 
         if not prompt:
             raise HTTPException(status_code=400, detail="Prompt required")
+
+        # ── persist user message ──────────────────────────────────────────────
+        append_message(session_id, "user", prompt)
 
         context = build_smart_ask_context(
             prompt=prompt,
@@ -453,20 +513,29 @@ async def ask_llm(request: Request):
         result = run_llm_task(
             "smart_ask",
             {
-                "prompt": prompt,
-                "context": context,
+                "prompt":     prompt,
+                "context":    context,
                 "session_id": session_id,
             },
         )
 
         if result.get("error"):
+            error_answer = "Error generating response"
+            append_message(session_id, "assistant", error_answer)
             return {
-                "answer": "Error generating response",
-                "error": result.get("error"),
+                "answer":     error_answer,
+                "error":      result.get("error"),
+                "session_id": session_id,
             }
 
+        answer = result.get("answer", "Error generating response")
+
+        # ── persist assistant answer ──────────────────────────────────────────
+        append_message(session_id, "assistant", answer)
+
         return {
-            "answer": result.get("answer", "Error generating response")
+            "answer":     answer,
+            "session_id": session_id,      # frontend uses this to refresh sidebar title
         }
 
     except HTTPException:
@@ -476,6 +545,104 @@ async def ask_llm(request: Request):
         raise HTTPException(
             status_code=500,
             detail=f"LLM response generation failed: {str(e)}",
+        )
+
+
+# ── GET /chat/sessions ────────────────────────────────────────────────────────
+@app.get("/chat/sessions")
+def get_chat_sessions():
+    """
+    Return all sessions ordered by most-recently-updated first.
+    Response: [ { id, title, last_updated }, ... ]
+    """
+    try:
+        return list_sessions()
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch sessions: {str(e)}",
+        )
+
+
+# ── POST /chat/session ────────────────────────────────────────────────────────
+@app.post("/chat/session")
+def post_chat_session():
+    """
+    Create a new chat session.
+    Enforces 7-session FIFO limit — oldest session is dropped automatically
+    when the limit is exceeded.
+
+    Response: { session_id, sessions: [ { id, title, last_updated }, ... ] }
+    """
+    try:
+        return create_session()
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create session: {str(e)}",
+        )
+
+
+# ── GET /chat/history/{session_id} ───────────────────────────────────────────
+@app.get("/chat/history/{session_id}")
+def get_chat_history(session_id: str):
+    """
+    Return all messages for a session in chronological order.
+    Response: [ { role, content }, ... ]
+
+    Returns an empty list (not 404) if the session exists but has no messages.
+    Returns 404 if the session_id is unknown.
+    """
+    try:
+        messages = get_session_messages(session_id)
+
+        # get_session_messages returns [] both for "no messages" and "not found"
+        # Distinguish the two so the frontend can handle 404 gracefully.
+        from utils.chat_store import _get_conn  # local import to keep route clean
+        with _get_conn() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+
+        if not exists:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        return messages
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch chat history: {str(e)}",
+        )
+
+
+# ── DELETE /chat/session/{session_id} ─────────────────────────────────────────
+@app.delete("/chat/session/{session_id}")
+def delete_chat_session_route(session_id: str):
+    """
+    Delete a session and all its messages.
+    Response: { deleted: true }
+    """
+    try:
+        deleted = delete_chat_session(session_id)
+
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        return {"deleted": True}
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete session: {str(e)}",
         )
 
 
